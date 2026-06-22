@@ -1,0 +1,47 @@
+[
+  {
+    "key": "split2_sniext",
+    "desc": "Standard Split2 (sniext) [Базовое разделение сегментов]",
+    "cmd": "--dpi-desync=split2 --dpi-desync-split-pos=sniext --dpi-desync-fooling=md5sig"
+  },
+  {
+    "key": "split2_midsld",
+    "desc": "Standard Split2 (midsld) [Сплит в середине SNI]",
+    "cmd": "--dpi-desync=split2 --dpi-desync-split-pos=midsld --dpi-desync-fooling=md5sig"
+  },
+  {
+    "key": "disorder_sniext",
+    "desc": "TCP Disorder (sniext) [Перемешивание порядка пакетов TCP]",
+    "cmd": "--dpi-desync=disorder --dpi-desync-split-pos=sniext --dpi-desync-fooling=badseq"
+  },
+  {
+    "key": "disorder_midsld",
+    "desc": "TCP Disorder (midsld) [Альтернативный порядок пакетов]",
+    "cmd": "--dpi-desync=disorder --dpi-desync-split-pos=midsld --dpi-desync-fooling=badseq"
+  },
+  {
+    "key": "fake_split2_sniext",
+    "desc": "Fake TLS + Split2 (sniext) [Фейки и деление пакетов]",
+    "cmd": "--dpi-desync=fake,split2 --dpi-desync-split-pos=sniext --dpi-desync-fooling=md5sig"
+  },
+  {
+    "key": "split2_badsum_sniext",
+    "desc": "Split2 + BadSum Fooling [Инжекция невалидных чексумм]",
+    "cmd": "--dpi-desync=split2 --dpi-desync-split-pos=sniext --dpi-desync-fooling=badsum"
+  },
+  {
+    "key": "multisplit_sniext",
+    "desc": "Pure Multisplit (sniext) [Двойное деление TLS]",
+    "cmd": "--dpi-desync=multisplit --dpi-desync-split-pos=sniext"
+  },
+  {
+    "key": "multidisorder_midsld",
+    "desc": "Pure Multidisorder (midsld) [Множественное перемешивание TCP]",
+    "cmd": "--dpi-desync=multidisorder --dpi-desync-split-pos=2,midsld"
+  },
+  {
+    "key": "wsize512_split2",
+    "desc": "Window Size 512 + Split2 [Обрезка буфера сокета]",
+    "cmd": "--wsize=512 --dpi-desync=fake,split2 --dpi-desync-split-pos=sniext --dpi-desync-fooling=md5sig"
+  }
+]

@@ -1,0 +1,99 @@
+{
+  "generated_at": "2026-06-22 15:48:04",
+  "dns_integrity_status": "unknown",
+  "total_tested": 1,
+  "test_duration_seconds": 89.43,
+  "leaderboard": [
+    {
+      "strategy": {
+        "key": "disorder_sniext",
+        "desc": "TCP Disorder (sniext) [Перемешивание пакетов]",
+        "mode": "disorder",
+        "fooling": "badseq",
+        "split_pos": "sniext",
+        "ttl": null,
+        "repeats": null,
+        "custom_args": "",
+        "category": "fast",
+        "transport": "tcp"
+      },
+      "score": 62.44,
+      "errors_summary": {
+        "timeout": 15,
+        "dns_error": 0,
+        "tls_error": 0,
+        "reset": 0,
+        "eof": 0,
+        "http_error": 0
+      },
+      "results": {
+        "YouTube TCP Main": {
+          "name": "YouTube TCP Main",
+          "success_rate": 0.0,
+          "avg_latency": 0.0,
+          "latencies": [],
+          "errors": {
+            "timeout": 5
+          }
+        },
+        "YouTube TCP CDN": {
+          "name": "YouTube TCP CDN",
+          "success_rate": 0.0,
+          "avg_latency": 0.0,
+          "latencies": [],
+          "errors": {
+            "timeout": 5
+          }
+        },
+        "Discord TCP Website": {
+          "name": "Discord TCP Website",
+          "success_rate": 100.0,
+          "avg_latency": 98.53792190551758,
+          "latencies": [
+            94.50602531433105,
+            94.3915843963623,
+            103.48272323608398,
+            101.05490684509277,
+            99.25436973571777
+          ],
+          "errors": {}
+        },
+        "Discord TCP Gateway": {
+          "name": "Discord TCP Gateway",
+          "success_rate": 100.0,
+          "avg_latency": 102.30135917663574,
+          "latencies": [
+            103.47437858581543,
+            98.03390502929688,
+            92.64945983886719,
+            125.57744979858398,
+            91.77160263061523
+          ],
+          "errors": {}
+        },
+        "GitHub TCP": {
+          "name": "GitHub TCP",
+          "success_rate": 100.0,
+          "avg_latency": 156.1955451965332,
+          "latencies": [
+            155.16972541809082,
+            149.74069595336914,
+            150.30598640441895,
+            167.90008544921875,
+            157.86123275756836
+          ],
+          "errors": {}
+        },
+        "Rutracker HTTP": {
+          "name": "Rutracker HTTP",
+          "success_rate": 0.0,
+          "avg_latency": 0.0,
+          "latencies": [],
+          "errors": {
+            "timeout": 5
+          }
+        }
+      }
+    }
+  ]
+}

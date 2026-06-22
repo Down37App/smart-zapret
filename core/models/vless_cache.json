@@ -1,0 +1,18 @@
+{
+  "uuid": "8ca5cbd3-ec16-4728-bedc-2bc0d82f0922",
+  "host": "217.217.247.249",
+  "port": 443,
+  "sni": "enterprisekitten.com",
+  "pbk": "SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc",
+  "sid": "6ba85179e30d4fc2",
+  "fp": "firefox",
+  "network_type": "tcp",
+  "header_type": "none",
+  "path": "/",
+  "service_name": "",
+  "security": "reality",
+  "flow": "xtls-rprx-vision",
+  "latency": 70.75190544128418,
+  "country": "Финляндия",
+  "city": "Хельсинки"
+}

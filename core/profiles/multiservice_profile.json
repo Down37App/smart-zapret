@@ -1,0 +1,5 @@
+{
+  "youtube_strategy": "disorder_midsld",
+  "discord_strategy": "disorder_sniext",
+  "general_strategy": "split2_sniext"
+}
