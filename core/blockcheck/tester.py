@@ -3,19 +3,22 @@ import socket
 import ssl
 import time
 import os
-import urllib.parse
 import sys
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from core.diagnostics import get_real_ip_via_doh
 
-# База целей
+# Структурированная база целей с указанием транспорта
 DEFAULT_TARGETS = {
     "YouTube TCP Main": {"url": "https://www.youtube.com", "transport": "tcp"},
     "YouTube TCP CDN": {"url": "https://rr1---sn-axq7sn7s.googlevideo.com", "transport": "tcp"},
     "Discord TCP Website": {"url": "https://discord.com", "transport": "tcp"},
     "Discord TCP Gateway": {"url": "https://gateway.discord.gg", "transport": "tcp"},
     "GitHub TCP": {"url": "https://github.com", "transport": "tcp"},
+    
+    # HTTP цель для тестирования порта 80
     "Rutracker HTTP": {"url": "http://rutracker.org", "transport": "tcp_http"},
+    
     "YouTube QUIC Main": {"url": "https://www.youtube.com", "transport": "udp"},
     "Google QUIC CDN": {"url": "https://rr1---sn-axq7sn7s.googlevideo.com", "transport": "udp"}
 }
@@ -39,7 +42,10 @@ class NetworkTester:
         return "http_error"
 
     def probe_quic_granular(self, ip, port=443, timeout=3.0):
-        """Низкоуровневый тест UDP/QUIC."""
+        """
+        Низкоуровневый замер UDP/QUIC. Отправляет пакет QUIC Initial
+        и ожидает любого ответа от сервера (Server Initial / Version Negotiation).
+        """
         bin_path = os.path.join(self.bin_dir, "quic_initial_www_google_com.bin")
         payload = b""
         if os.path.exists(bin_path):
@@ -51,12 +57,12 @@ class NetworkTester:
                 
         if not payload:
             payload = (
-                b'\xc0\x00\x00\x00\x01'
-                b'\x08\x00\x00\x00\x00\x00\x00\x00\x00'
-                b'\x00'
-                b'\x00'
-                b'\x40\x02'
-                + b'\x00' * 1200
+                b'\xc0\x00\x00\x00\x01'  # Long Header, Version 1
+                b'\x08\x00\x00\x00\x00\x00\x00\x00\x00'  # Dest Connection ID (8 bytes)
+                b'\x00'  # Source Connection ID (0 bytes)
+                b'\x00'  # Token Length (0)
+                b'\x40\x02'  # Length (2 bytes encoded)
+                + b'\x00' * 1200  # Паддинг до минимального размера QUIC пакета
             )
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -82,7 +88,7 @@ class NetworkTester:
 
     def probe_target_granular_detailed(self, url, timeout=4.0):
         """
-        Реверс-инжиниринг сетевого пути: пошаговое выполнение TLS рукопожатия
+        Реверс-инжиниринг сетевого пути: пошаговое выполнение рукопожатия
         с детальной фиксацией фазы сброса, IP адреса и входящего TTL пакетов RST.
         """
         parsed = urllib.parse.urlparse(url)
@@ -205,11 +211,11 @@ class NetworkTester:
         }
 
     def _probe_single_target(self, name, target_info):
+        """Выполняет цикл проверок с учетом транспорта цели."""
         successes = 0
         latencies = []
         errors_summary = {}
         
-        # Системные ИИ-метрики последнего шага замера
         dns_resolved_ip = "unknown"
         handshake_phase_reached = "resolve"
         received_rst_from_dpi = False
@@ -235,13 +241,6 @@ class NetworkTester:
                 status, elapsed = self.probe_quic_granular(ip)
                 dns_resolved_ip = ip
                 handshake_phase_reached = "udp_handshake"
-            elif target_info["transport"] == "tcp_http":
-                res = self.probe_target_granular_detailed(target_info["url"])
-                status, elapsed = res["status"], res["elapsed"]
-                dns_resolved_ip = res["dns_resolved_ip"]
-                handshake_phase_reached = res["handshake_phase_reached"]
-                received_rst_from_dpi = res["received_rst_from_dpi"]
-                response_ttl = res["response_ttl"]
             else:
                 res = self.probe_target_granular_detailed(target_info["url"])
                 status, elapsed = res["status"], res["elapsed"]
@@ -271,3 +270,25 @@ class NetworkTester:
             "received_rst_from_dpi": received_rst_from_dpi,
             "response_ttl": response_ttl
         }
+
+    def run_parallel_tests(self, active_targets=None):
+        """Многопоточный параллельный опрос всех целей."""
+        test_set = active_targets if active_targets else self.targets
+        results = {}
+        with ThreadPoolExecutor(max_workers=len(test_set)) as executor:
+            futures = {
+                executor.submit(self._probe_single_target, name, info): name 
+                for name, info in test_set.items()
+            }
+            for f in futures:
+                name = futures[f]
+                try:
+                    results[name] = f.result()
+                except Exception:
+                    results[name] = {
+                        "name": name, "success_rate": 0.0, "avg_latency": 0.0, "latencies": [],
+                        "errors": {"unknown_error": self.iterations},
+                        "dns_resolved_ip": "unknown", "handshake_phase_reached": "resolve",
+                        "received_rst_from_dpi": False, "response_ttl": None
+                    }
+        return results
