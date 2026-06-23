@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import sys
+import re
 
 def find_fake_file(filename, bin_dir):
     """Рекурсивно ищет файлы фейков (.bin). Возвращает None, если файлы не найдены."""
@@ -15,7 +16,6 @@ def find_fake_file(filename, bin_dir):
                 if filename in filenames:
                     return os.path.abspath(os.path.join(dirpath, filename)).replace("\\", "/")
     
-    # СТРОГО: Возвращаем None, если файл отсутствует в системе
     return None
 
 
@@ -59,7 +59,6 @@ class Strategy:
         if self.custom_args:
             resolved = self.custom_args
             
-            # Если файл-слепок TLS ClientHello отсутствует, вырезаем этот аргумент
             if "tls_clienthello_www_google_com.bin" in resolved:
                 real_path = find_fake_file("tls_clienthello_www_google_com.bin", bin_dir)
                 if real_path:
@@ -68,7 +67,6 @@ class Strategy:
                     resolved = resolved.replace('--dpi-desync-fake-tls="{bin}tls_clienthello_www_google_com.bin"', '')
                     resolved = resolved.replace('--dpi-desync-split-seqovl-pattern="{bin}tls_clienthello_www_google_com.bin"', '')
             
-            # Если файл-слепок QUIC Initial отсутствует, вырезаем этот аргумент
             if "quic_initial_www_google_com.bin" in resolved:
                 real_path = find_fake_file("quic_initial_www_google_com.bin", bin_dir)
                 if real_path:
@@ -79,6 +77,52 @@ class Strategy:
             parts.append(resolved)
                 
         return " ".join(parts)
+
+    def parse_to_features(self, bin_dir, tspu_hop=None):
+        """Парсит строковые параметры стратегии в конкретные числовые фичи для ИИ."""
+        features = {
+            "key": self.key,
+            "mode": self.mode or "none",
+            "fooling": self.fooling or "none",
+            "split_pos": self.split_pos or "none",
+            "split_size": None,
+            "fake_payload_type": "none",
+            "fake_ttl": self.ttl,
+            "fake_ttl_relative": None,
+            "repeats": self.repeats
+        }
+        
+        # 1. Извлекаем размер сплита из аргументов
+        cmd = self.to_cmd(bin_dir, raw_desync_only=True)
+        split_match = re.search(r'--dpi-desync-split-pos=(\d+)', cmd)
+        if split_match:
+            features["split_size"] = int(split_match.group(1))
+        else:
+            if self.split_pos == "sniext":
+                features["split_size"] = 1  # Условный сдвиг на границу SNI
+            elif self.split_pos == "midsld":
+                features["split_size"] = 29 # Условный сдвиг в тело домена
+                
+        seqovl_match = re.search(r'--dpi-desync-split-seqovl=(\d+)', cmd)
+        if seqovl_match:
+            features["split_size"] = int(seqovl_match.group(1))
+
+        # 2. Определяем характер фейкового пакета
+        if "quic" in cmd:
+            features["fake_payload_type"] = "quic_initial"
+        elif "tls" in cmd or "fake" in (self.mode or ""):
+            features["fake_payload_type"] = "tls_client_hello"
+        elif "http" in cmd:
+            features["fake_payload_type"] = "http_get"
+
+        # 3. Рассчитываем относительное положение TTL относительно ТСПУ
+        if self.ttl is not None and tspu_hop is not None:
+            try:
+                features["fake_ttl_relative"] = int(self.ttl) - int(tspu_hop)
+            except ValueError:
+                pass
+
+        return features
 
 
 class StrategyManager:

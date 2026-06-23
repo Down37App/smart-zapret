@@ -2,11 +2,13 @@
 import os
 import json
 import time
+import sys
 from core.winws.launcher import WinwsLauncher
 from core.blockcheck.tester import NetworkTester
 from core.blockcheck.scorer import StrategyScorer
 from core.blockcheck.scheduler import AdaptiveStrategyScheduler
 from core.blockcheck.strategies import Strategy
+from core.telemetry import TelemetryLogger
 
 CHECKPOINT_FILE = "blockcheck_checkpoint.json"
 
@@ -15,6 +17,7 @@ class BlockcheckEngine:
         self.launcher = WinwsLauncher(engine_path)
         self.bin_dir = os.path.abspath(os.path.dirname(engine_path)).replace("\\", "/") + "/"
         self.working_dir = working_dir
+        self.logger = TelemetryLogger()
 
     def save_checkpoint(self, phase, current_index, leaderboard, strategy_queue, phase_survivors):
         """Сохраняет состояние с полной сериализацией очередей и текущих результатов фазы."""
@@ -125,6 +128,7 @@ class BlockcheckEngine:
                 print(f"[!] Ошибка DNS-анализа: {e}")
 
         self.dns_status = dns_status
+        self.tspu_hop = tspu_hop
 
         # Настройка очередей
         if resume_state:
@@ -161,6 +165,8 @@ class BlockcheckEngine:
         # Восстановление весов
         for item in leaderboard:
             scheduler.record_result(item["strategy"], item["score"])
+
+        provider, asn = self.logger.get_network_info_cached()
 
         # Цикл фаз
         for phase_id in [1, 2, 3]:
@@ -227,6 +233,61 @@ class BlockcheckEngine:
                     "results": results
                 }
                 phase_survivors.append(test_entry)
+
+                # ВЫСОКОЭНТРОПИЙНЫЙ СБОР ДАННЫХ ДЛЯ ИИ (Логируем АБСОЛЮТНО все попытки: и успехи, и провалы)
+                try:
+                    local_time = time.localtime()
+                    # Парсим чистые числовые фичи с помощью strategies.py
+                    ai_features = strat.parse_to_features(self.bin_dir, tspu_hop)
+                    
+                    features_dict = {
+                        "strategy": ai_features,
+                        "network_baseline": {
+                            "tspu_distance_hops": tspu_hop,
+                            "dns_integrity": dns_status
+                        },
+                        "environment": {
+                            "local_hour": local_time.tm_hour,
+                            "local_weekday": local_time.tm_wday,
+                            "timezone_offset": time.altzone if local_time.tm_isdst > 0 else time.timezone
+                        }
+                    }
+                    
+                    targets_dict = {
+                        "overall_score": score,
+                        "phase_id": phase_id,
+                        "probes": {}
+                    }
+                    for target_name, probe_res in results.items():
+                        l7_symptom = "OK"
+                        if probe_res["success_rate"] == 0:
+                            l7_symptom = "SILENT_DROP"
+                            if "reset" in probe_res["errors"]:
+                                l7_symptom = "TCP_RESET"
+                            elif "tls_error" in probe_res["errors"]:
+                                l7_symptom = "TLS_ALERT"
+                        
+                        targets_dict["probes"][target_name] = {
+                            "success_rate": probe_res["success_rate"],
+                            "avg_latency": probe_res["avg_latency"],
+                            "errors": probe_res["errors"],
+                            "l7_symptom": l7_symptom,
+                            "dns_resolved_ip": probe_res.get("dns_resolved_ip", "unknown"),
+                            "handshake_phase_reached": probe_res.get("handshake_phase_reached", "resolve"),
+                            "received_rst_from_dpi": probe_res.get("received_rst_from_dpi", False),
+                            "response_ttl": probe_res.get("response_ttl")
+                        }
+                        
+                    self.logger.log_ai_training_entry(
+                        provider=provider,
+                        asn=asn,
+                        os_platform=sys.platform,
+                        zapret_ver="3.1",
+                        features_dict=features_dict,
+                        targets_dict=targets_dict
+                    )
+                except Exception as e:
+                    pass
 
                 scheduler.record_result(strat, score)
                 print(f"        -> Скор: {score:.1f}% | Ошибки: {errors}")

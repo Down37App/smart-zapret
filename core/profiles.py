@@ -55,9 +55,9 @@ class MultiServiceGenerator:
         if not (yt_path and ds_path and gen_path):
             return False
 
-        # 2. Определение пути к демону nfqws
+        # 2. Определение пути к демону nfqws / winws
         resolved_nfqws = os.path.join(bin_dir, "nfqws").replace("\\", "/")
-        
+
         # Находим абсолютный путь к файлу фейка QUIC
         quic_fake_path = find_fake_file("quic_initial_www_google_com.bin", bin_dir)
         
@@ -157,9 +157,6 @@ echo [*] Завершение процессов winws...
 taskkill /F /IM winws.exe > nul 2>&1
 echo [+] Сетевые настройки и процессы успешно восстановлены.
 """
-
-# -*- coding: utf-8 -*-
-# Внутри core/profiles.py обновляем метод _build_linux_sh:
 
     def _build_linux_sh(self, inner_cmd, resolved_nfqws):
         return f"""#!/bin/bash

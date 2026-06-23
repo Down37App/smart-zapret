@@ -4,20 +4,18 @@ import ssl
 import time
 import os
 import urllib.parse
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from core.diagnostics import get_real_ip_via_doh
 
-# Структурированная база целей с указанием транспорта
+# База целей
 DEFAULT_TARGETS = {
     "YouTube TCP Main": {"url": "https://www.youtube.com", "transport": "tcp"},
     "YouTube TCP CDN": {"url": "https://rr1---sn-axq7sn7s.googlevideo.com", "transport": "tcp"},
     "Discord TCP Website": {"url": "https://discord.com", "transport": "tcp"},
     "Discord TCP Gateway": {"url": "https://gateway.discord.gg", "transport": "tcp"},
     "GitHub TCP": {"url": "https://github.com", "transport": "tcp"},
-    
-    # Новая HTTP цель для тестирования порта 80
     "Rutracker HTTP": {"url": "http://rutracker.org", "transport": "tcp_http"},
-    
     "YouTube QUIC Main": {"url": "https://www.youtube.com", "transport": "udp"},
     "Google QUIC CDN": {"url": "https://rr1---sn-axq7sn7s.googlevideo.com", "transport": "udp"}
 }
@@ -41,14 +39,9 @@ class NetworkTester:
         return "http_error"
 
     def probe_quic_granular(self, ip, port=443, timeout=3.0):
-        """
-        Низкоуровневый тест UDP/QUIC. Отправляет пакет QUIC Initial
-        и ожидает любого ответа от сервера (Server Initial / Version Negotiation).
-        """
+        """Низкоуровневый тест UDP/QUIC."""
         bin_path = os.path.join(self.bin_dir, "quic_initial_www_google_com.bin")
         payload = b""
-        
-        # Пытаемся считать готовый слепок Initial пакета
         if os.path.exists(bin_path):
             try:
                 with open(bin_path, "rb") as f:
@@ -56,15 +49,14 @@ class NetworkTester:
             except Exception:
                 pass
                 
-        # Если файла нет, используем минимальный валидный QUIC Initial заголовок v1 (RFC 9000)
         if not payload:
             payload = (
-                b'\xc0\x00\x00\x00\x01'  # Long Header, Version 1
-                b'\x08\x00\x00\x00\x00\x00\x00\x00\x00'  # Dest Connection ID (8 bytes)
-                b'\x00'  # Source Connection ID (0 bytes)
-                b'\x00'  # Token Length (0)
-                b'\x40\x02'  # Length (2 bytes encoded)
-                + b'\x00' * 1200  # Паддинг до минимального размера QUIC пакета
+                b'\xc0\x00\x00\x00\x01'
+                b'\x08\x00\x00\x00\x00\x00\x00\x00\x00'
+                b'\x00'
+                b'\x00'
+                b'\x40\x02'
+                + b'\x00' * 1200
             )
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -73,7 +65,6 @@ class NetworkTester:
         
         try:
             sock.sendto(payload, (ip, port))
-            # Ожидаем ответный UDP пакет от сервера
             data, addr = sock.recvfrom(2048)
             elapsed = (time.time() - start_time) * 1000.0
             return "OK", elapsed
@@ -81,7 +72,6 @@ class NetworkTester:
             elapsed = (time.time() - start_time) * 1000.0
             return "timeout", elapsed
         except (ConnectionResetError, ConnectionRefusedError):
-            # В UDP это означает получение ICMP-сообщения Port Unreachable (признак блокировки)
             elapsed = (time.time() - start_time) * 1000.0
             return "reset", elapsed
         except Exception as e:
@@ -90,149 +80,140 @@ class NetworkTester:
         finally:
             sock.close()
 
-    def probe_target_granular(self, url, timeout=4.0):
-        """Стандартный TCP/TLS сокет-тест."""
+    def probe_target_granular_detailed(self, url, timeout=4.0):
+        """
+        Реверс-инжиниринг сетевого пути: пошаговое выполнение TLS рукопожатия
+        с детальной фиксацией фазы сброса, IP адреса и входящего TTL пакетов RST.
+        """
         parsed = urllib.parse.urlparse(url)
         host = parsed.netloc
+        port = 443 if parsed.scheme == "https" else 80
+        
+        dns_resolved_ip = "unknown"
+        handshake_phase_reached = "resolve"
+        received_rst_from_dpi = False
+        response_ttl = None
+        
+        # Шаг 1: DNS-резолв
         try:
-            ip = socket.gethostbyname(host)
+            dns_resolved_ip = socket.gethostbyname(host)
         except socket.gaierror:
             ip = get_real_ip_via_doh(host)
-            if not ip:
-                return "dns_error", 0.0
+            if ip:
+                dns_resolved_ip = ip
+            else:
+                return {
+                    "status": "dns_error", "elapsed": 0.0,
+                    "handshake_phase_reached": "resolve",
+                    "dns_resolved_ip": "unknown", "received_rst_from_dpi": False,
+                    "response_ttl": None
+                }
 
+        # Шаг 2: TCP соединение (SYN / SYN-ACK)
+        handshake_phase_reached = "tcp_connect"
         start_time = time.time()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
-        try:
-            sock.connect((ip, 443))
-        except Exception as e:
-            sock.close()
-            elapsed = (time.time() - start_time) * 1000.0
-            return self._classify_socket_error(e), elapsed
+        
+        # На Linux пытаемся перехватить входящий TTL
+        if sys.platform != "win32":
+            try:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_RECVTTL, 1)
+            except Exception:
+                pass
 
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
         try:
-            secure_sock = context.wrap_socket(sock, server_hostname=host)
-            secure_sock.close()
+            sock.connect((dns_resolved_ip, port))
         except Exception as e:
             sock.close()
             elapsed = (time.time() - start_time) * 1000.0
-            return self._classify_socket_error(e), elapsed
+            err_type = self._classify_socket_error(e)
+            if err_type == "reset":
+                received_rst_from_dpi = True
+            return {
+                "status": err_type, "elapsed": elapsed,
+                "handshake_phase_reached": "tcp_connect",
+                "dns_resolved_ip": dns_resolved_ip,
+                "received_rst_from_dpi": received_rst_from_dpi,
+                "response_ttl": None
+            }
+
+        # Шаг 3: Передача данных / TLS ClientHello
+        if port == 443:
+            handshake_phase_reached = "tls_handshake"
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            
+            try:
+                secure_sock = context.wrap_socket(sock, server_hostname=host)
+                
+                # На Linux парсим опцию IP_RECVTTL из сокета через recvmsg
+                if sys.platform != "win32":
+                    try:
+                        secure_sock.setblocking(False)
+                        data, ancdata, flags, address = secure_sock.recvmsg(1024, socket.CMSG_LEN(4))
+                        for cmsg_level, cmsg_type, cmsg_data in ancdata:
+                            if cmsg_level == socket.IPPROTO_IP and cmsg_type == socket.IP_TTL:
+                                import struct
+                                response_ttl = struct.unpack("i", cmsg_data)[0]
+                    except Exception:
+                        pass
+                        
+                secure_sock.close()
+            except Exception as e:
+                sock.close()
+                elapsed = (time.time() - start_time) * 1000.0
+                err_type = self._classify_socket_error(e)
+                if err_type == "reset":
+                    received_rst_from_dpi = True
+                return {
+                    "status": err_type, "elapsed": elapsed,
+                    "handshake_phase_reached": "tls_handshake",
+                    "dns_resolved_ip": dns_resolved_ip,
+                    "received_rst_from_dpi": received_rst_from_dpi,
+                    "response_ttl": response_ttl
+                }
+        else:
+            # Для нешифрованного HTTP/80
+            handshake_phase_reached = "http_data"
+            try:
+                payload = f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode('utf-8')
+                sock.sendall(payload)
+                response = sock.recv(1024)
+                sock.close()
+            except Exception as e:
+                sock.close()
+                elapsed = (time.time() - start_time) * 1000.0
+                err_type = self._classify_socket_error(e)
+                if err_type == "reset":
+                    received_rst_from_dpi = True
+                return {
+                    "status": err_type, "elapsed": elapsed,
+                    "handshake_phase_reached": "http_data",
+                    "dns_resolved_ip": dns_resolved_ip,
+                    "received_rst_from_dpi": received_rst_from_dpi,
+                    "response_ttl": None
+                }
 
         elapsed = (time.time() - start_time) * 1000.0
-        return "OK", elapsed
-
-    def _probe_single_target(self, name, target_info):
-        """Выполняет цикл проверок с учетом транспорта цели."""
-        successes = 0
-        latencies = []
-        errors_summary = {}
-        
-        parsed = urllib.parse.urlparse(target_info["url"])
-        host = parsed.netloc
-        
-        try:
-            ip = socket.gethostbyname(host)
-        except socket.gaierror:
-            ip = get_real_ip_via_doh(host)
-            if not ip:
-                return {
-                    "name": name, "success_rate": 0.0, "avg_latency": 0.0, "latencies": [],
-                    "errors": {"dns_error": self.iterations}
-                }
-
-        for _ in range(self.iterations):
-            if target_info["transport"] == "udp":
-                status, elapsed = self.probe_quic_granular(ip)
-            else:
-                status, elapsed = self.probe_target_granular(target_info["url"])
-                
-            if status == "OK":
-                successes += 1
-                latencies.append(elapsed)
-            else:
-                errors_summary[status] = errors_summary.get(status, 0) + 1
-            time.sleep(0.1)
-
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
-        success_rate = (successes / self.iterations) * 100.0
-
         return {
-            "name": name,
-            "success_rate": success_rate,
-            "avg_latency": avg_latency,
-            "latencies": latencies,
-            "errors": errors_summary
+            "status": "OK", "elapsed": elapsed,
+            "handshake_phase_reached": "http_data" if port == 80 else "tls_handshake",
+            "dns_resolved_ip": dns_resolved_ip, "received_rst_from_dpi": False,
+            "response_ttl": response_ttl
         }
 
-    def run_parallel_tests(self, active_targets=None):
-        test_set = active_targets if active_targets else self.targets
-        results = {}
-        with ThreadPoolExecutor(max_workers=len(test_set)) as executor:
-            futures = {
-                executor.submit(self._probe_single_target, name, info): name 
-                for name, info in test_set.items()
-            }
-            for f in futures:
-                name = futures[f]
-                try:
-                    results[name] = f.result()
-                except Exception:
-                    results[name] = {
-                        "name": name, "success_rate": 0.0, "avg_latency": 0.0, "latencies": [],
-                        "errors": {"unknown_error": self.iterations}
-                    }
-        return results
-    
-    def probe_http_raw_granular(self, ip, host, port=80, timeout=3.0):
-        """
-        Отправляет сырой нешифрованный HTTP GET-запрос на порт 80
-        и анализирует ответ на предмет перехвата и инжекции заглушек провайдеров.
-        """
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        start_time = time.time()
-        try:
-            sock.connect((ip, port))
-            # Формируем стандартный GET запрос к заблокированному ресурсу
-            payload = f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode('utf-8')
-            sock.sendall(payload)
-            response = sock.recv(4096)
-            elapsed = (time.time() - start_time) * 1000.0
-            
-            resp_str = response.decode('utf-8', errors='ignore').lower()
-            
-            # Проверяем сигнатуры редиректов на заглушки российских провайдеров
-            if "location:" in resp_str:
-                # Фильтруем редиректы на известные домены блокировок провайдеров
-                if any(kw in resp_str for kw in ["block", "warning", "warningpage", "rt.ru", "beeline", "mts.ru", "megafon", "dom.ru"]):
-                    return "reset", elapsed # Рассматриваем редирект на заглушку как блокировку
-            
-            # Прямая инжекция HTML-кода блокировки
-            if any(kw in resp_str for kw in ["zapret", "блокиров", "gosuslugi", "reestr", "rkn"]):
-                return "reset", elapsed
-                
-            return "OK", elapsed
-        except socket.timeout:
-            elapsed = (time.time() - start_time) * 1000.0
-            return "timeout", elapsed
-        except (ConnectionResetError, ConnectionAbortedError):
-            elapsed = (time.time() - start_time) * 1000.0
-            return "reset", elapsed
-        except Exception as e:
-            elapsed = (time.time() - start_time) * 1000.0
-            return self._classify_socket_error(e), elapsed
-        finally:
-            sock.close()
-
-# Обновляем метод _probe_single_target для поддержки tcp_http транспорта:
     def _probe_single_target(self, name, target_info):
         successes = 0
         latencies = []
         errors_summary = {}
+        
+        # Системные ИИ-метрики последнего шага замера
+        dns_resolved_ip = "unknown"
+        handshake_phase_reached = "resolve"
+        received_rst_from_dpi = False
+        response_ttl = None
         
         parsed = urllib.parse.urlparse(target_info["url"])
         host = parsed.netloc
@@ -244,17 +225,30 @@ class NetworkTester:
             if not ip:
                 return {
                     "name": name, "success_rate": 0.0, "avg_latency": 0.0, "latencies": [],
-                    "errors": {"dns_error": self.iterations}
+                    "errors": {"dns_error": self.iterations},
+                    "dns_resolved_ip": "unknown", "handshake_phase_reached": "resolve",
+                    "received_rst_from_dpi": False, "response_ttl": None
                 }
 
         for _ in range(self.iterations):
             if target_info["transport"] == "udp":
                 status, elapsed = self.probe_quic_granular(ip)
+                dns_resolved_ip = ip
+                handshake_phase_reached = "udp_handshake"
             elif target_info["transport"] == "tcp_http":
-                # Вызов сырого HTTP/80 парсера
-                status, elapsed = self.probe_http_raw_granular(ip, host)
+                res = self.probe_target_granular_detailed(target_info["url"])
+                status, elapsed = res["status"], res["elapsed"]
+                dns_resolved_ip = res["dns_resolved_ip"]
+                handshake_phase_reached = res["handshake_phase_reached"]
+                received_rst_from_dpi = res["received_rst_from_dpi"]
+                response_ttl = res["response_ttl"]
             else:
-                status, elapsed = self.probe_target_granular(target_info["url"])
+                res = self.probe_target_granular_detailed(target_info["url"])
+                status, elapsed = res["status"], res["elapsed"]
+                dns_resolved_ip = res["dns_resolved_ip"]
+                handshake_phase_reached = res["handshake_phase_reached"]
+                received_rst_from_dpi = res["received_rst_from_dpi"]
+                response_ttl = res["response_ttl"]
                 
             if status == "OK":
                 successes += 1
@@ -271,5 +265,9 @@ class NetworkTester:
             "success_rate": success_rate,
             "avg_latency": avg_latency,
             "latencies": latencies,
-            "errors": errors_summary
+            "errors": errors_summary,
+            "dns_resolved_ip": dns_resolved_ip,
+            "handshake_phase_reached": handshake_phase_reached,
+            "received_rst_from_dpi": received_rst_from_dpi,
+            "response_ttl": response_ttl
         }
